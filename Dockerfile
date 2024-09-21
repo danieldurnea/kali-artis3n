@@ -1,7 +1,7 @@
 FROM ghcr.io/linuxserver/baseimage-kasmvnc:kali
 
 ARG AUTH_TOKEN
-ARG PASSWORD=rootuser
+ARG PASSWORD
 
 # Install packages and set locale
 RUN apt-get update \
