@@ -45,6 +45,7 @@ WORKDIR /tools
 RUN git clone https://github.com/cddmp/enum4linux-ng.git /tools/enum4linux-ng \
     && ln -s /tools/enum4linux-ng/enum4linux-ng.py /usr/local/bin/enum4linux-ng
 
+
 # nmapAutomator
 RUN git clone https://github.com/21y4d/nmapAutomator.git /tools/nmapAutomator \
     && ln -s /tools/nmapAutomator/nmapAutomator.sh /usr/local/bin/nmapAutomator
@@ -69,3 +70,4 @@ RUN cp /usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt.tar.gz /usr/sh
     && tar -xzf rockyou.txt.tar.gz
 
 WORKDIR /root
+RUN apt-get clean && rm -rf /var/lib/apt/lists/*
