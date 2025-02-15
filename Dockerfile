@@ -1,73 +1,185 @@
-FROM kalilinux/kali-rolling:latest AS base
-LABEL maintainer="Artis3n <dev@artis3nal.com>"
+FROM kalilinux/kali-rolling
 
-ARG DEBIAN_FRONTEND=noninteractive
+ARG DESKTOP_ENVIRONMENT
+ARG REMOTE_ACCESS
+ARG KALI_PACKAGE
+ARG SSH_PORT
+ARG RDP_PORT
+ARG VNC_PORT
+ARG VNC_DISPLAY
+ARG BUILD_ENV
+ARG HOSTDIR
+ARG CONTAINERDIR
+ARG UNAME
+ARG UPASS
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends apt-utils \
-    && apt-get install -y --no-install-recommends amass awscli curl dnsutils \
-    dotdotpwn file finger ffuf gobuster git hydra impacket-scripts john less locate \
-    lsof man-db netcat-traditional nikto nmap proxychains4 python3 python3-pip python3-setuptools \
-    python3-wheel smbclient smbmap socat ssh-client sslscan sqlmap telnet tmux unzip whatweb vim zip \
-    # Slim down layer size
-    && apt-get autoremove -y \
-    && apt-get autoclean -y \
-    # Remove apt-get cache from the layer to reduce container size
-    && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND noninteractive
 
-# Second set of installs to slim the layers a bit
-# exploitdb and metasploit are huge packages
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-    exploitdb metasploit-framework \
-    # Slim down layer size
-    && apt-get autoremove -y \
-    && apt-get autoclean -y \
-    && rm -rf /var/lib/apt/lists*
+# #####################################################
+# valid choices for the desktop are 
+# e17, gnome, i3, i3-gaps, kde, live, lxde, mate, xfce
+# #####################################################
 
-WORKDIR /tmp
-# AWS CLI
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
-    && unzip awscliv2.zip \
-    && ./aws/install
+ENV DESKTOP_ENVIRONMENT=${DESKTOP_ENVIRONMENT:-xfce}
+ENV DESKTOP_PKG=kali-desktop-${DESKTOP_ENVIRONMENT}
 
-WORKDIR /root
-# enum4linux-ng
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3-impacket python3-ldap3 python3-yaml \
-    && mkdir /tools \
-    # Slim down layer size
-    && apt-get autoremove -y \
-    && apt-get autoclean -y \
-    && rm -rf /var/lib/apt/lists*
+# #####################################################
+# the remote client to use
+# if it is null then it will default to x2go
+# valid choices are vnc, rdp, x2go
+# #####################################################
 
-WORKDIR /tools
-RUN git clone https://github.com/cddmp/enum4linux-ng.git /tools/enum4linux-ng \
-    && ln -s /tools/enum4linux-ng/enum4linux-ng.py /usr/local/bin/enum4linux-ng
+ENV REMOTE_ACCESS=${REMOTE_ACCESS:-rdp}
 
+# #####################################################
+# the kali packages to install
+# if it is null then it will default to "default"
+# valid choices are arm, core, default, everything, 
+# firmware, headless, labs, large, nethunter
+# #####################################################
 
-# nmapAutomator
-RUN git clone https://github.com/21y4d/nmapAutomator.git /tools/nmapAutomator \
-    && ln -s /tools/nmapAutomator/nmapAutomator.sh /usr/local/bin/nmapAutomator
+ENV KALI_PACKAGE=${KALI_PACKAGE:-default}
+ENV KALI_PKG=kali-linux-${KALI_PACKAGE}
 
-ENV TERM=xterm-256color
+# #####################################################
+# install packages that we always want
+# #####################################################
 
+RUN apt update -q --fix-missing  
+RUN apt upgrade -y
+
+# Add your packages here:
+RUN apt -y install --no-install-recommends sudo wget curl dbus-x11 xinit openssh-server ${DESKTOP_PKG}
+
+RUN apt -y install locales
+RUN sed -i s/^#\ de_DE.UTF-8\ UTF-8/de_DE.UTF-8\ UTF-8/ /etc/locale.gen
+RUN locale-gen
+
+# #####################################################
+# create the start bash shell file
+# #####################################################
+
+RUN echo "#!/bin/bash" > /startkali.sh
+RUN echo "/etc/init.d/ssh start" >> /startkali.sh
+RUN chmod 755 /startkali.sh
+
+# #####################################################
+# Install the Kali Packages
+# #####################################################
+
+RUN apt -y install --no-install-recommends ${KALI_PKG}
+
+# #####################################################
+# create the non-root kali user
+# #####################################################
+
+RUN useradd -m -s /bin/bash -G sudo ${UNAME}
+RUN echo "${UNAME}:${UPASS}" | chpasswd
+
+# #####################################################
+# change the ssh port in /etc/ssh/sshd_config
+# When you use the bridge network, then you would
+# not have to do that. You could rather add a port
+# mapping argument such as -p 2022:22 to the 
+# Docker create command. But we might as well
+# use the host network and port 22 might be taken
+# on the Docker host. Hence we change it 
+# here inside the container
+# #####################################################
+
+RUN echo "Port $SSH_PORT" >>/etc/ssh/sshd_config
+
+# #################################
+# disable power manager plugin xfce
+# #################################
+
+RUN rm /etc/xdg/autostart/xfce4-power-manager.desktop >/dev/null 2>&1
+RUN if [ -e /etc/xdg/xfce4/panel/default.xml ] ; \
+    then \
+        sed -i s/power/fail/ /etc/xdg/xfce4/panel/default.xml ; \
+    fi
+
+# #############################
+# install and configure x2go
+# x2go uses ssh
+# #############################
+
+RUN if [ "xx2go" = "x${REMOTE_ACCESS}" ]  ; \
+    then \
+        apt -y install --no-install-recommends x2goserver ; \
+        echo "/etc/init.d/x2goserver start" >> /startkali.sh ; \
+    fi
+
+# #############################
+# install and configure xrdp
+# #############################
+# currently, xrdp only works
+# with the xfce desktop
+# #############################
+
+RUN if [ "xrdp" = "x${REMOTE_ACCESS}" ] ; \
+    then \
+            apt -y install --no-install-recommends xorg xorgxrdp xrdp ; \
+            echo "rm -rf /var/run/xrdp >/dev/null 2>&1" >> /startkali.sh ; \
+            echo "/etc/init.d/xrdp start" >> /startkali.sh ; \
+            sed -i s/^port=3389/port=${RDP_PORT}/ /etc/xrdp/xrdp.ini ; \
+            adduser xrdp ssl-cert ; \
+            if [ "xfce" = "${DESKTOP_ENVIRONMENT}" ] ; \
+            then \
+                echo xfce4-session > /home/${UNAME}/.xsession ; \
+                chmod +x /home/${UNAME}/.xsession ; \
+            fi ; \
+    fi
+
+# ###########################################################
+# install and configure tigervnc-standalone-server
+# ###########################################################
+# this needs a bit more tweaking than the other protocols
+# we need to set the mandatory security options,
+# the password for the connection, the port to use
+# and also define the ${UNAME} to be used for the 
+# screen VNC_DISPLAY
+# the password seems to be overwritten so I am hard
+# setting it in the /startkali.sh script each time 
+# After running tigervncsession-start, the session will
+# terminate once the user logs out. Therefore
+# we do a sudo -u ${UNAME} vncserver in an endless loop 
+# afterwords. This way we always have a running vnc server
+# ###########################################################
+
+RUN if [ "xvnc" = "x${REMOTE_ACCESS}" ] ; \
+    then \
+        apt -y install --no-install-recommends tigervnc-standalone-server tigervnc-tools; \
+        echo "/usr/libexec/tigervncsession-start :${VNC_DISPLAY} " >> /startkali.sh ; \
+        echo "echo -e '${UPASS}' | vncpasswd -f >/home/${UNAME}/.vnc/passwd" >> /startkali.sh  ;\
+        echo "while true; do sudo -u ${UNAME} vncserver -fg -v ; done" >> /startkali.sh ; \
+        echo ":${VNC_DISPLAY}=${UNAME}" >>/etc/tigervnc/vncserver.users ;\
+        echo '$localhost = "no";' >>/etc/tigervnc/vncserver-config-mandatory ;\
+        echo '$SecurityTypes = "VncAuth";' >>/etc/tigervnc/vncserver-config-mandatory ;\
+        mkdir -p /home/${UNAME}/.vnc ;\
+        chown ${UNAME}:${UNAME} /home/${UNAME}/.vnc ;\
+        touch /home/${UNAME}/.vnc/passwd ;\
+        chown ${UNAME}:${UNAME} /home/${UNAME}/.vnc/passwd ;\
+        chmod 600 /home/${UNAME}/.vnc/passwd ;\
+    fi
+
+# ###########################################################
+# The /startkali.sh script may terminate, i.e. if we only 
+# have statements inside it like /etc/init.d/xxx start
+# then once the startscript has finished, the container 
+# would stop. We want to keep it running though.
+# therefore I just call /bin/bash at the end of the start
+# script. This will not terminate and keep the container
+# up and running until it is stopped.
+# ###########################################################
+
+RUN echo "/bin/bash" >> /startkali.sh
+
+# ###########################################################
+# expose the right ports and set the entrypoint
+# ###########################################################
+
+EXPOSE ${SSH_PORT} ${RDP_PORT} ${VNC_PORT}
+WORKDIR "/root"
 ENTRYPOINT ["/bin/bash"]
-
-FROM base AS wordlists
-
-ARG DEBIAN_FRONTEND=noninteractive
-
-# Install Seclists
-RUN mkdir -p /usr/share/seclists \
-    # The apt-get install seclists command isn't installing the wordlists, so clone the repo.
-    && git clone --depth 1 https://github.com/danielmiessler/SecLists.git /usr/share/seclists
-
-# Prepare rockyou wordlist
-RUN mkdir -p /usr/share/wordlists
-WORKDIR /usr/share/wordlists
-RUN cp /usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt.tar.gz /usr/share/wordlists/ \
-    && tar -xzf rockyou.txt.tar.gz
-
-WORKDIR /root
-RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+CMD ["/startkali.sh"]
